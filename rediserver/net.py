@@ -47,54 +47,75 @@ class SocketStream(object):
 
 
 class RedisProtocolHandler(asynchat.async_chat):
+    LINE_FEED = '\r\n'
+
     def __init__(self, conn, addr, server):
         asynchat.async_chat.__init__(self, conn)
         self.client_address = addr
         self.connection = conn
         self.server = server
-        self.set_terminator('\r\n')
-        self.rfile = []
-        self.found_terminator = self.handle_header
+        self.data = []
         self.wfile = SocketStream(self.connection)
+
+        self.set_terminator(self.LINE_FEED)
+        self.found_terminator = self._handle_header
 
     def collect_incoming_data(self, data):
         """Collect the data arriving on the connection."""
-        self.rfile.append(data)
+        self.data.append(data)
 
-    def handle_header(self):
+    def _handle_header(self):
         """Determine how many lines to read."""
-        self.numlines = int(self.rfile[0][1:]) * 2
-        self.found_terminator = self.handle_line
+        self.numlines = int(self.data[0][1:])
+        # the next line is a length line
+        self.found_terminator = self._handle_length
 
-    def handle_line(self):
+    def _handle_length(self):
+        """Read a *<len> line."""
+        length = int(self.data[-1][1:])
+        self.set_terminator(length)
+        self.found_terminator = self._handle_line
+
+    def _handle_feed(self):
+        """_handle a feed after raw data."""
+        if self.numlines <= 0:
+            self.found_terminator = self._handle_header
+        else:
+            self.found_terminator = self._handle_length
+
+    def _handle_line(self):
         self.numlines -= 1
-        if self.numlines != 0:
+        self.set_terminator(self.LINE_FEED)
+        self.found_terminator = self._handle_feed
+        if self.numlines > 0:
             return
-        cmd = InputParser(self.rfile).read_response()
+        self.process_data()
+
+    def process_data(self):
+        cmd = InputParser(self.data).read_response()
         encoder = ResponseEncoder(self.wfile)
+        try:
+            self.server.process_cmd(cmd, encoder, self)
+            self.data = []
+        finally:
+            self.wfile.finish()
 
-        self.server.process_cmd(cmd, encoder, self)
 
-        self.wfile.finish()
-        self.found_terminator = self.handle_header
-
-
-class Server(asyncore.dispatcher):
+class AsyncoreServer(asyncore.dispatcher):
     _io_loop_started = False
 
     def process_cmd(self, cmd, encoder, handler):
-        abstract #@UndefinedVariable
+        self._callback(cmd, encoder, handler)
 
-    def __init__(self, ip, port, handler=RedisProtocolHandler, backlog=1024):
+    def __init__(self, ip, port, callback, protocol_handler=RedisProtocolHandler, backlog=5):
         self.ip = ip
         self.port = port
-        self.handler = handler
+        self.handler = protocol_handler
+        self._callback = callback
         asyncore.dispatcher.__init__(self)
         self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
-
         self.set_reuse_addr()
         self.bind((ip, port))
-
         self.listen(backlog)
 
     def handle_accept(self):

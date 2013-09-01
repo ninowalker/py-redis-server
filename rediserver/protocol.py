@@ -30,14 +30,17 @@ class ResponseEncoder(object):
         self._fp = sock
 
     def bulk(self, value):
+        """Send part of a multiline reply."""
         data = ["$", str(len(value)), "\r\n", unicode(value), "\r\n"]
         self._fp.write("".join(data))
 
     def error(self, msg):
+        """Send an error."""
         data = ['-', unicode(msg), "\r\n"]
         self._fp.write("".join(data))
 
     def encode(self, value):
+        """Respond with data."""
         if isinstance(value, (list, tuple)):
             self._fp.write('*%d\r\n' % len(value))
             for v in value:
@@ -50,4 +53,5 @@ class ResponseEncoder(object):
             self.bulk(v)
 
     def status(self, msg="OK"):
+        """Send a status."""
         self._fp.write("+%s\r\n" % msg)
