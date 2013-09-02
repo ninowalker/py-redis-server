@@ -5,8 +5,8 @@ The [Redis Protocol](http://redis.io/topics/protocol) is light-weight wire proto
 clients in every mature language. These clients are designed for robust and persistent connections
 suitable for low latency LAN network traffic, making them ideal for IPC.
 
-This module includes two parts: the [protocol codecs](/ninowalker/py-redis-server/blob/rediserver/protocol.py),
-and a [server](/ninowalker/py-redis-server/blob/rediserver/net.py). The server uses the 
+This module includes two parts: the [protocol codecs](https://github.com/ninowalker/py-redis-server/blob/master/rediserver/protocol.py),
+and a [server](https://github.com/ninowalker/py-redis-server/blob/master/rediserver/net.py). The server uses the 
 [Asyncore module](http://www.python.org/doc//current/library/asyncore.html),
 a non-blocking framework bundled with Python since (at least) 2.4.
 
@@ -21,7 +21,7 @@ exercise for the developer.
 
 # Running the example
 
-You'll find trivial implementations [here](/ninowalker/py-redis-server/blob/examples/simple.py).
+You'll find trivial implementations [here](https://github.com/ninowalker/py-redis-server/blob/master/examples/simple.py).
 
 ```
 git clone https://github.com/ninowalker/py-redis-server.git
@@ -52,7 +52,8 @@ $ redis-benchmark -p 6379 incr foo 1
 60606.06 requests per second
 ```
 
-Locally, the python server is pretty good, and certainly good for a  
+Locally, the python server is pretty good, and, as you're probably implementing business logic
+and not data store-logic, it's still blazingly fast.
 
 ```
 $ redis-benchmark -p 33333 incr foo 1
