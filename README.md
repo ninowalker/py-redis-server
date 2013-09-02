@@ -10,6 +10,31 @@ and a [server](/ninowalker/py-redis-server/blob/rediserver/net.py). The server u
 [Asyncore module](http://www.python.org/doc//current/library/asyncore.html),
 a non-blocking framework bundled with Python since (at least) 2.4.
 
+This server implementation joins others from other languages, enabling effortless IPC within a polyglot ecosystem:
+
+* [Node.js](https://github.com/athoune/node-redis-protocol)
+* [Java + Netty](https://github.com/spullara/redis-protocol)
+* Others?
+
+It is up to you to roll your own semantics and implement command handlers, but that is left as an
+exercise for the developer.
+
+# Running the example
+
+You'll find trivial implementations [here](/ninowalker/py-redis-server/blob/examples/simple.py).
+
+```
+git clone https://github.com/ninowalker/py-redis-server.git
+
+cd py-redis-server
+python setup.py build
+
+python examples/simple.py 33333 echo & 
+
+redis-cli -p 33333 hello world
+
+```
+
 # Benchmarks
 
 Run on a Macbook Pro, 2.7GHz i7, 8GB RAM.
