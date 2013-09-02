@@ -1,52 +1,19 @@
+from logging import getLogger
+from rediserver.protocol import InputParser, Response
 import asynchat
-import cStringIO
-import select
-from rediserver.protocol import InputParser, ResponseEncoder
 import asyncore
+import cStringIO
 import socket
 
-
-class SocketStream(object):
-    def __init__(self, sock):
-        """Initiate a socket (non-blocking) and a buffer"""
-        self.sock = sock
-        self.buffer = cStringIO.StringIO()
-        self.closed = 1   # compatibility with SocketServer
-
-    def write(self, data):
-        """Buffer the input, then send as many bytes as possible"""
-        self.buffer.write(data)
-        if self.writable():
-            buff = self.buffer.getvalue()
-            # next try/except clause suggested by Robert Brown
-            try:
-                sent = self.sock.send(buff)
-            except:
-                # Catch socket exceptions and abort
-                # writing the buffer
-                sent = len(data)
-
-            # reset the buffer to the data that has not yet be sent
-            self.buffer = cStringIO.StringIO()
-            self.buffer.write(buff[sent:])
-
-    def finish(self):
-        """When all data has been received, send what remains
-        in the buffer"""
-        data = self.buffer.getvalue()
-        # send data
-        while len(data):
-            while not self.writable():
-                pass
-            sent = self.sock.send(data)
-            data = data[sent:]
-
-    def writable(self):
-        """Used as a flag to know if something can be sent to the socket"""
-        return select.select([], [self.sock], [])[1]
+LOG = getLogger(__name__)
 
 
 class RedisProtocolHandler(asynchat.async_chat):
+    """
+    Handler responsible for decoding wire payloads and dispatching
+    to the server's callback.
+    """
+
     LINE_FEED = '\r\n'
 
     def __init__(self, conn, addr, server):
@@ -55,87 +22,109 @@ class RedisProtocolHandler(asynchat.async_chat):
         self.connection = conn
         self.server = server
         self.data = []
-        self.wfile = SocketStream(self.connection)
+        self.wfile = cStringIO.StringIO() #SocketStream(self.connection)
 
         self.set_terminator(self.LINE_FEED)
-        self.found_terminator = self._handle_header
+        self.found_terminator = self._parse_header
+        self.can_read = True
+
+    def readable(self):
+        # we should not read before sending our last paylaod
+        return self.can_read
+
+    def close_when_done(self):
+        # unblock for reading after a payload is sent.
+        self.can_read = True
 
     def collect_incoming_data(self, data):
         """Collect the data arriving on the connection."""
         self.data.append(data)
 
-    def _handle_header(self):
+    def handle_expt(self):
+        # called when there's an exception
+        self.close()
+
+    def handle_close(self):
+        # called when the write buffer is empty.
+        self.can_read = True
+
+    def _parse_header(self):
         """Determine how many lines to read."""
         self.numlines = int(self.data[0][1:])
         # the next line is a length line
-        self.found_terminator = self._handle_length
+        self.found_terminator = self._parse_length
 
-    def _handle_length(self):
+    def _parse_length(self):
         """Read a *<len> line."""
         length = int(self.data[-1][1:])
         self.set_terminator(length)
-        self.found_terminator = self._handle_line
+        self.found_terminator = self._parse_line
 
-    def _handle_feed(self):
-        """_handle a feed after raw data."""
+    def _parse_feed(self):
+        """_parse a feed after raw data."""
         if self.numlines <= 0:
-            self.found_terminator = self._handle_header
+            self.found_terminator = self._parse_header
         else:
-            self.found_terminator = self._handle_length
+            self.found_terminator = self._parse_length
 
-    def _handle_line(self):
+    def _parse_line(self):
+        # parse a line payload
         self.numlines -= 1
         self.set_terminator(self.LINE_FEED)
-        self.found_terminator = self._handle_feed
+        self.found_terminator = self._parse_feed
         if self.numlines > 0:
             return
-        self.process_data()
+        self.can_read = False
+        self._process_data()
 
-    def process_data(self):
-        cmd = InputParser(self.data).read_response()
-        encoder = ResponseEncoder(self.wfile)
+    def _process_data(self):
+        response = Response(self.wfile.write)
         try:
-            self.server.process_cmd(cmd, encoder, self)
-            self.data = []
+            cmd = InputParser(self.data).read_response()
+            self.server._callback(cmd, response, self)
+            if not response.dirty:
+                raise Exception("no response")
+        except Exception, e:
+            response.error(u"ERR: %s" % e)
+            raise
         finally:
-            self.wfile.finish()
+            resp = self.wfile.getvalue()
+            self.wfile = cStringIO.StringIO()
+            self.data = []
+
+            # write the data out async; close_when_done actually
+            # causes handle_close to be called, and we unblock and
+            # enable reads again.
+            self.push(resp)
+            self.close_when_done()
 
 
 class AsyncoreServer(asyncore.dispatcher):
-    _io_loop_started = False
+    protocol_handler = RedisProtocolHandler
+    allow_address_reuse = True
+    backlog = 1024
 
-    def process_cmd(self, cmd, encoder, handler):
-        self._callback(cmd, encoder, handler)
-
-    def __init__(self, ip, port, callback, protocol_handler=RedisProtocolHandler, backlog=5):
+    def __init__(self, ip, port, callback, ):
         self.ip = ip
         self.port = port
-        self.handler = protocol_handler
         self._callback = callback
         asyncore.dispatcher.__init__(self)
         self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.set_reuse_addr()
+        if self.allow_address_reuse:
+            self.set_reuse_addr()
         self.bind((ip, port))
-        self.listen(backlog)
+        self.listen(self.backlog)
+
+    def serve_forever(self):
+        """Starts the asyncore IO loop."""
+        asyncore.loop()
 
     def handle_accept(self):
         try:
             conn, addr = self.accept()
         except socket.error:
-            self.log_info('warning: server accept() threw an exception', 'warning')
-            return
+            LOG.warning('socket.error thrown by accept()')
         except TypeError:
-            self.log_info('warning: server accept() threw EWOULDBLOCK', 'warning')
-            return
-        # creates an instance of the handler class to handle the request/response
-        # on the incoming connexion
-        self.handler(conn, addr, self)
-
-    def start(self, start_io_loop=True, **loop_kwargs):
-        if self.__class__._io_loop_started or not start_io_loop:
-            return
-        self.__class__._io_loop_started = True
-        try:
-            asyncore.loop(**loop_kwargs)
-        except KeyboardInterrupt:
-            print "Crtl+C pressed. Shutting down."
+            LOG.warning('EWOULDBLOCK thrown by accept()')
+        else:
+            self.protocol_handler(conn, addr, self)
